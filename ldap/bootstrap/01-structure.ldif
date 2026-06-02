@@ -1,0 +1,15 @@
+dn: ou=people,dc=acmecorp,dc=local
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=acmecorp,dc=local
+objectClass: organizationalUnit
+ou: groups
+
+dn: ou=IT,ou=people,dc=acmecorp,dc=local
+objectClass: organizationalUnit
+ou: IT
+
+dn: ou=Finance,ou=people,dc=acmecorp,dc=local
+objectClass: organizationalUnit
+ou: Finance

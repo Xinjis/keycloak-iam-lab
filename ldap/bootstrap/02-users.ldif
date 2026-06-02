@@ -1,0 +1,31 @@
+dn: uid=ldap.jdoe,ou=IT,ou=people,dc=acmecorp,dc=local
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: ldap.jdoe
+cn: John Doe
+sn: Doe
+givenName: John
+mail: ldap.jdoe@acmecorp.local
+userPassword: Test1234!
+uidNumber: 2001
+gidNumber: 2001
+homeDirectory: /home/ldap.jdoe
+title: Senior Developer
+departmentNumber: IT
+employeeNumber: EMP-L001
+
+dn: uid=ldap.msmith,ou=Finance,ou=people,dc=acmecorp,dc=local
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: ldap.msmith
+cn: Mary Smith
+sn: Smith
+givenName: Mary
+mail: ldap.msmith@acmecorp.local
+userPassword: Test1234!
+uidNumber: 2002
+gidNumber: 2002
+homeDirectory: /home/ldap.msmith
+title: Financial Analyst
+departmentNumber: Finance
+employeeNumber: EMP-L002

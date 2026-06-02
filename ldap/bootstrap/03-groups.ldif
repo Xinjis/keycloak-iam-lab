@@ -1,0 +1,15 @@
+dn: cn=portal-users,ou=groups,dc=acmecorp,dc=local
+objectClass: groupOfNames
+cn: portal-users
+member: uid=ldap.jdoe,ou=IT,ou=people,dc=acmecorp,dc=local
+member: uid=ldap.msmith,ou=Finance,ou=people,dc=acmecorp,dc=local
+
+dn: cn=it-admins,ou=groups,dc=acmecorp,dc=local
+objectClass: groupOfNames
+cn: it-admins
+member: uid=ldap.jdoe,ou=IT,ou=people,dc=acmecorp,dc=local
+
+dn: cn=finance-team,ou=groups,dc=acmecorp,dc=local
+objectClass: groupOfNames
+cn: finance-team
+member: uid=ldap.msmith,ou=Finance,ou=people,dc=acmecorp,dc=local

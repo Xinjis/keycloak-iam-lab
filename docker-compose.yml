@@ -1,0 +1,99 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: kc-postgres
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: Kc_Secure_2024!
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - kc-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0.6
+    container_name: keycloak
+    command: start-dev --import-realm
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: Kc_Secure_2024!
+      KC_HOSTNAME: localhost
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_METRICS_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+      KC_LOG_LEVEL: INFO
+      KC_FEATURES: token-exchange,admin-fine-grained-authz
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: Admin1234!
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./realms:/opt/keycloak/data/import
+      - ./themes:/opt/keycloak/themes
+    networks:
+      - kc-net
+
+  openldap:
+    image: osixia/openldap:1.5.0
+    platform: linux/amd64
+    container_name: openldap
+    environment:
+      LDAP_ORGANISATION: "AcmeCorp"
+      LDAP_DOMAIN: "acmecorp.local"
+      LDAP_ADMIN_PASSWORD: "LdapAdmin123!"
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: "readonly"
+      LDAP_READONLY_USER_PASSWORD: "Readonly123!"
+    ports:
+      - "389:389"
+    volumes:
+      - ldap_data:/var/lib/ldap
+      - ldap_config:/etc/ldap/slapd.d
+    networks:
+      - kc-net
+
+  phpldapadmin:
+    image: osixia/phpldapadmin:0.9.0
+    platform: linux/amd64
+    container_name: phpldapadmin
+    environment:
+      PHPLDAPADMIN_LDAP_HOSTS: openldap
+      PHPLDAPADMIN_HTTPS: "false"
+    ports:
+      - "8090:80"
+    depends_on:
+      - openldap
+    networks:
+      - kc-net
+
+  mailhog:
+    image: mailhog/mailhog
+    container_name: mailhog
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    networks:
+      - kc-net
+
+volumes:
+  postgres_data:
+  ldap_data:
+  ldap_config:
+
+networks:
+  kc-net:
+    driver: bridge
