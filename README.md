@@ -396,6 +396,100 @@ LOGOUT — global session termination:
 
 ---
 
+## Conditional MFA — Per-Role Enforcement
+
+*The enterprise pattern for privileged users.*
+
+Most IAM implementations have one of three problems:
+
+- **MFA universal** → friction, user complaints, slow adoption
+- **MFA disabled** → privileged accounts exposed
+- **MFA optional** → the users at highest risk are the ones least likely to enable it
+
+The correct pattern is conditional: MFA is automatically required for users with elevated roles, transparent for standard users.
+
+### How the flow works
+
+```
+acmecorp-browser-mfa
+│
+├── Cookie (ALTERNATIVE)
+│   └── SSO cookie active? → enter directly
+│
+├── Identity Provider Redirector (ALTERNATIVE)
+│   └── coming from external IdP? → identity brokering
+│
+└── Forms (ALTERNATIVE)
+    │
+    ├── Username Password Form (REQUIRED)
+    │   └── Validate credentials
+    │
+    └── Conditional OTP (CONDITIONAL)
+        │
+        ├── Condition - User Role (REQUIRED)
+        │   └── alias: require-mfa-for-admins
+        │   └── User Role: admin
+        │
+        └── OTP Form (REQUIRED)
+            └── Only runs if condition passes
+```
+
+### Execution by user
+
+```
+USER: jdoe (roles: user, it-admin)
+─────────────────────────────────────
+  Password form  → REQUIRED → ✅ Test1234!
+  Conditional OTP → CONDITIONAL
+    └── has admin role? → NO
+    └── Subflow SKIPPED
+  Result: authenticated WITHOUT OTP
+
+
+USER: itadmin (roles: admin)
+─────────────────────────────────────
+  Password form  → REQUIRED → ✅ Admin1234!
+  Conditional OTP → CONDITIONAL
+    └── has admin role? → YES
+    └── Subflow RUNS
+        └── OTP Form (REQUIRED) → request code → ✅ 457823
+  Result: authenticated with 2 factors
+```
+
+### Onboarding automation
+
+When a new privileged user is provisioned, a `CONFIGURE_TOTP` Required Action is assigned. On their next login, Keycloak forces them through the QR registration screen before they can access any resource — no manual intervention needed.
+
+```bash
+docker exec keycloak /opt/keycloak/bin/kcadm.sh update \
+  users/$USER_UUID -r acmecorp \
+  -s 'requiredActions=["CONFIGURE_TOTP"]'
+```
+
+### TOTP under the hood
+
+TOTP (RFC 6238) doesn't transmit codes over the network. The authenticator app and Keycloak share a secret during registration. After that, both calculate the same code independently using HMAC-SHA1 over the current 30-second time slot:
+
+```
+code = truncate( HMAC-SHA1(secret, floor(unix_time / 30)) ) to 6 digits
+```
+
+If the user enters the code shown on their phone, it matches what Keycloak just calculated. No round-trips. No network exposure of the code itself.
+
+### Step-up authentication (next step)
+
+The current implementation requires MFA at login. The next iteration uses the `acr` claim (Authentication Context Class Reference) for step-up: standard login with password only, MFA challenge triggered only when accessing critical resources.
+
+```
+acr=1   ← password only
+acr=2   ← password + TOTP
+acr=3   ← password + TOTP + WebAuthn (planned)
+```
+
+The application inspects `acr` on each request. If insufficient for the operation requested, it redirects to Keycloak with `acr_values=2` and Keycloak runs only the steps needed to reach that level. Less friction, same security guarantee where it matters.
+
+---
+
 ## What This Lab Covers
 
 ### Module 1 — Enterprise Realm Setup
@@ -410,26 +504,34 @@ LOGOUT — global session termination:
 - Attribute mappers: `departmentNumber`, `employeeNumber` → JWT claims
 - Users organized in OUs by department (IT, Finance)
 
-### Module 3 — OAuth2 / OIDC Deep Dive
+### Module 3 — MFA and Authentication Flows
+- Custom Authentication Flow with conditional MFA
+- TOTP policy: HmacSHA1, 6 digits, 30-second window
+- Conditional OTP by role — admins required to use MFA, standard users not affected
+- `CONFIGURE_TOTP` Required Action for automatic onboarding
+- Flow binding via Keycloak 23 contextual menu (no more "Bindings" tab)
+- Enterprise pattern: MFA for privileged users without organization-wide friction
+
+### Module 4 — OAuth2 / OIDC Deep Dive
 - Authorization Code Flow + PKCE (interactive apps)
 - Client Credentials grant (M2M services)
 - Refresh Token with rotation
 - JWT token anatomy and validation
 - Logout gap demonstration with introspection
 
-### Module 4 — SSO Multi-Application
+### Module 5 — SSO Multi-Application
 - 2 Node.js apps with real SSO
 - Single login, both apps accessible
 - Global logout via `end_session_endpoint`
 - Session ID verification across apps
 
-### Module 5 — Cryptography Applied
+### Module 6 — Cryptography Applied
 - Live JWKS endpoint inspection
 - JWT forgery attempt (demonstrating why it fails)
 - RS256 vs HS256 — architectural implications
 - Token signature verification
 
-### Module 6 — Security Hardening
+### Module 7 — Security Hardening
 - Password policy (complexity, history, expiration)
 - Brute force protection
 - Session lifetime management
