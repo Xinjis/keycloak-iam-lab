@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AcmeCorp — Admin Panel</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+  body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+  .cred-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; margin-right: 4px; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-800" x-data="adminPanel()" x-init="loadAll()">
+
+<div class="max-w-7xl mx-auto p-6">
+
+  <header class="mb-8">
+    <div class="flex items-center justify-between">
+      <div>
+        <h1 class="text-3xl font-bold text-slate-900">AcmeCorp Admin Panel</h1>
+        <p class="text-sm text-slate-500 mt-1">Identity & Credential Management — backed by Keycloak Admin API</p>
+      </div>
+      <a href="/logout" class="text-sm text-slate-500 hover:text-slate-900 mr-4">Logout</a><button @click="loadAll()" class="bg-slate-900 hover:bg-slate-700 text-white px-4 py-2 rounded text-sm font-medium">
+        Refresh
+      </button>
+    </div>
+  </header>
+
+  <div class="grid grid-cols-4 gap-4 mb-8">
+    <div class="bg-white rounded-lg shadow p-5">
+      <div class="text-xs uppercase text-slate-400 font-semibold">Total Users</div>
+      <div class="text-3xl font-bold text-slate-900 mt-2" x-text="stats.totalUsers ?? '—'"></div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-5">
+      <div class="text-xs uppercase text-slate-400 font-semibold">Enabled</div>
+      <div class="text-3xl font-bold text-green-600 mt-2" x-text="stats.enabledUsers ?? '—'"></div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-5">
+      <div class="text-xs uppercase text-slate-400 font-semibold">LDAP Federated</div>
+      <div class="text-3xl font-bold text-blue-600 mt-2" x-text="stats.ldapUsers ?? '—'"></div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-5">
+      <div class="text-xs uppercase text-slate-400 font-semibold">Local Users</div>
+      <div class="text-3xl font-bold text-purple-600 mt-2" x-text="stats.localUsers ?? '—'"></div>
+    </div>
+  </div>
+
+  <div class="bg-white rounded-lg shadow mb-6 p-4 flex gap-3">
+    <input x-model="filter" type="text" placeholder="Search by username, email or role..."
+           class="flex-1 border border-slate-300 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-900">
+    <select x-model="filterMfa" class="border border-slate-300 rounded px-3 py-2 text-sm">
+      <option value="all">All users</option>
+      <option value="has-mfa">With 2FA</option>
+      <option value="no-mfa">Without 2FA</option>
+      <option value="webauthn">Has WebAuthn</option>
+      <option value="ldap">LDAP federated</option>
+    </select>
+  </div>
+
+  <div class="bg-white rounded-lg shadow overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-xs uppercase text-slate-600 font-semibold">
+        <tr>
+          <th class="px-4 py-3 text-left">User</th>
+          <th class="px-4 py-3 text-left">Type</th>
+          <th class="px-4 py-3 text-left">Roles</th>
+          <th class="px-4 py-3 text-left">2FA Methods</th>
+          <th class="px-4 py-3 text-left">Status</th>
+          <th class="px-4 py-3 text-right">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <template x-for="u in filteredUsers()" :key="u.id">
+          <tr class="border-t border-slate-100 hover:bg-slate-50">
+            <td class="px-4 py-3">
+              <div class="font-semibold text-slate-900" x-text="u.username"></div>
+              <div class="text-xs text-slate-500" x-text="u.email"></div>
+            </td>
+            <td class="px-4 py-3">
+              <span x-show="u.federated" class="cred-badge bg-blue-100 text-blue-800">LDAP</span>
+              <span x-show="!u.federated" class="cred-badge bg-slate-100 text-slate-700">LOCAL</span>
+            </td>
+            <td class="px-4 py-3">
+              <template x-for="role in u.roles" :key="role">
+                <span class="cred-badge bg-slate-100 text-slate-700" x-text="role"></span>
+              </template>
+            </td>
+            <td class="px-4 py-3">
+              <template x-for="c in u.credentials.filter(x => x.type !== 'password')" :key="c.id">
+                <span class="cred-badge"
+                      :class="{
+                        'bg-green-100 text-green-800': c.type === 'otp',
+                        'bg-purple-100 text-purple-800': c.type === 'webauthn',
+                        'bg-amber-100 text-amber-800': c.type === 'recovery-authn-codes'
+                      }"
+                      x-text="credLabel(c.type)"></span>
+              </template>
+              <span x-show="u.credentials.filter(x => x.type !== 'password').length === 0"
+                    class="text-xs text-slate-400 italic">no 2FA</span>
+            </td>
+            <td class="px-4 py-3">
+              <span x-show="u.enabled" class="cred-badge bg-green-100 text-green-800">ACTIVE</span>
+              <span x-show="!u.enabled" class="cred-badge bg-red-100 text-red-800">DISABLED</span>
+            </td>
+            <td class="px-4 py-3 text-right">
+              <button @click="openUser(u)" class="text-xs bg-slate-900 hover:bg-slate-700 text-white px-3 py-1.5 rounded">
+                Manage
+              </button>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+    <div x-show="users.length === 0" class="text-center py-12 text-slate-400 text-sm">
+      Loading users...
+    </div>
+  </div>
+
+  <!-- Modal de detalle del usuario -->
+  <div x-show="selectedUser" x-cloak
+       class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+       @keyup.escape.window="selectedUser = null">
+    <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+      <div class="border-b border-slate-200 px-6 py-4 flex justify-between items-center">
+        <div>
+          <h2 class="text-xl font-bold" x-text="selectedUser?.username"></h2>
+          <p class="text-sm text-slate-500" x-text="selectedUser?.email"></p>
+        </div>
+        <button @click="selectedUser = null" class="text-slate-400 hover:text-slate-900 text-2xl leading-none">×</button>
+      </div>
+
+      <div class="p-6 space-y-6">
+
+        <div>
+          <h3 class="text-xs uppercase font-semibold text-slate-500 mb-2">Credentials</h3>
+          <div class="space-y-2">
+            <template x-for="c in selectedUser?.credentials || []" :key="c.id">
+              <div class="flex items-center justify-between bg-slate-50 rounded p-3">
+                <div>
+                  <div class="font-medium text-sm" x-text="credLabel(c.type)"></div>
+                  <div class="text-xs text-slate-500" x-text="c.userLabel || '(no label)'"></div>
+                  <div class="text-xs text-slate-400" x-text="formatDate(c.createdDate)"></div>
+                </div>
+                <button x-show="c.type !== 'password'"
+                        @click="deleteCredential(selectedUser.id, c.id)"
+                        class="text-xs bg-red-50 hover:bg-red-100 text-red-700 px-3 py-1.5 rounded">
+                  Remove
+                </button>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div>
+          <h3 class="text-xs uppercase font-semibold text-slate-500 mb-2">Force Actions</h3>
+          <div class="grid grid-cols-2 gap-2">
+            <button @click="forceAction(selectedUser.id, ['UPDATE_PASSWORD'])"
+                    class="text-sm bg-amber-50 hover:bg-amber-100 text-amber-800 px-3 py-2 rounded">
+              Force password reset
+            </button>
+            <button @click="forceAction(selectedUser.id, ['CONFIGURE_TOTP'])"
+                    class="text-sm bg-green-50 hover:bg-green-100 text-green-800 px-3 py-2 rounded">
+              Force TOTP setup
+            </button>
+            <button @click="forceAction(selectedUser.id, ['webauthn-register'])"
+                    class="text-sm bg-purple-50 hover:bg-purple-100 text-purple-800 px-3 py-2 rounded">
+              Force WebAuthn setup
+            </button>
+            <button @click="forceAction(selectedUser.id, ['CONFIGURE_RECOVERY_AUTHN_CODES'])"
+                    class="text-sm bg-orange-50 hover:bg-orange-100 text-orange-800 px-3 py-2 rounded">
+              Force recovery codes
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <h3 class="text-xs uppercase font-semibold text-slate-500 mb-2">Session Management</h3>
+          <div class="flex gap-2">
+            <button @click="logoutUser(selectedUser.id)"
+                    class="flex-1 text-sm bg-slate-100 hover:bg-slate-200 text-slate-800 px-3 py-2 rounded">
+              Force logout all sessions
+            </button>
+            <button @click="toggleUser(selectedUser.id, !selectedUser.enabled)"
+                    class="flex-1 text-sm rounded px-3 py-2"
+                    :class="selectedUser?.enabled
+                      ? 'bg-red-50 hover:bg-red-100 text-red-800'
+                      : 'bg-green-50 hover:bg-green-100 text-green-800'">
+              <span x-text="selectedUser?.enabled ? 'Disable user' : 'Enable user'"></span>
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div x-show="message" x-cloak
+       class="fixed bottom-6 right-6 bg-slate-900 text-white px-4 py-3 rounded shadow-lg text-sm"
+       x-text="message"></div>
+
+</div>
+
+<script>
+function adminPanel() {
+  return {
+    users: [],
+    stats: {},
+    filter: '',
+    filterMfa: 'all',
+    selectedUser: null,
+    message: '',
+
+    async loadAll() {
+      await Promise.all([this.loadUsers(), this.loadStats()]);
+    },
+
+    async loadUsers() {
+      const res = await fetch('/api/users');
+      this.users = await res.json();
+    },
+
+    async loadStats() {
+      const res = await fetch('/api/stats');
+      this.stats = await res.json();
+    },
+
+    filteredUsers() {
+      let arr = this.users;
+      const q = this.filter.toLowerCase();
+      if (q) {
+        arr = arr.filter(u =>
+          (u.username || '').toLowerCase().includes(q) ||
+          (u.email || '').toLowerCase().includes(q) ||
+          u.roles.some(r => r.toLowerCase().includes(q))
+        );
+      }
+      if (this.filterMfa === 'has-mfa') {
+        arr = arr.filter(u => u.credentials.some(c => c.type !== 'password'));
+      } else if (this.filterMfa === 'no-mfa') {
+        arr = arr.filter(u => !u.credentials.some(c => c.type !== 'password'));
+      } else if (this.filterMfa === 'webauthn') {
+        arr = arr.filter(u => u.credentials.some(c => c.type === 'webauthn'));
+      } else if (this.filterMfa === 'ldap') {
+        arr = arr.filter(u => u.federated);
+      }
+      return arr;
+    },
+
+    credLabel(type) {
+      const map = {
+        'password': 'Password',
+        'otp': 'TOTP',
+        'webauthn': 'WebAuthn',
+        'recovery-authn-codes': 'Recovery Codes'
+      };
+      return map[type] || type;
+    },
+
+    formatDate(ts) {
+      if (!ts) return '';
+      return new Date(ts).toLocaleDateString('en-US', {
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      });
+    },
+
+    openUser(u) {
+      this.selectedUser = JSON.parse(JSON.stringify(u));
+    },
+
+    notify(text) {
+      this.message = text;
+      setTimeout(() => this.message = '', 3000);
+    },
+
+    async deleteCredential(userId, credId) {
+      if (!confirm('Remove this credential? The user will need to re-register it.')) return;
+      await fetch(`/api/users/${userId}/credentials/${credId}`, { method: 'DELETE' });
+      this.notify('Credential removed');
+      await this.loadUsers();
+      const updated = this.users.find(u => u.id === userId);
+      this.selectedUser = updated ? JSON.parse(JSON.stringify(updated)) : null;
+    },
+
+    async forceAction(userId, actions) {
+      await fetch(`/api/users/${userId}/required-actions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actions })
+      });
+      this.notify(`Required action set: ${actions.join(', ')}`);
+    },
+
+    async logoutUser(userId) {
+      if (!confirm('Force logout all sessions of this user?')) return;
+      await fetch(`/api/users/${userId}/logout`, { method: 'POST' });
+      this.notify('All sessions terminated');
+    },
+
+    async toggleUser(userId, enabled) {
+      await fetch(`/api/users/${userId}/toggle`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+      this.notify(enabled ? 'User enabled' : 'User disabled');
+      await this.loadUsers();
+      this.selectedUser = null;
+    }
+  };
+}
+</script>
+</body>
+</html>

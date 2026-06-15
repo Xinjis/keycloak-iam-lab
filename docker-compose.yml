@@ -21,7 +21,7 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:23.0.6
     container_name: keycloak
-    command: start-dev --import-realm
+    command: start-dev --import-realm --features=recovery-codes
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
