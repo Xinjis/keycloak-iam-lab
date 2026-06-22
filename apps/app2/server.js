@@ -1,8 +1,8 @@
 const express = require('express');
 const session = require('express-session');
 const { Issuer, generators } = require('openid-client');
-
 const app = express();
+
 const PORT = 3002;
 const NOMBRE = "App Finanzas";
 const COLOR = "#2E7D32";
@@ -10,8 +10,11 @@ const COLOR = "#2E7D32";
 app.use(session({ secret: 'secret-app2', resave: false, saveUninitialized: false }));
 
 let client;
+let issuerUrl;
+
 async function init() {
   const issuer = await Issuer.discover('http://localhost:8080/realms/acmecorp');
+  issuerUrl = 'http://localhost:8080/realms/acmecorp';
   client = new issuer.Client({
     client_id: 'acmecorp-portal',
     client_secret: 'portal-secret-local',
@@ -22,78 +25,117 @@ async function init() {
   app.listen(PORT, () => console.log(`${NOMBRE} → http://localhost:${PORT}`));
 }
 
-const auth = (req, res, next) => { if (!req.session.user) return res.redirect('/login'); next(); };
+const auth = (req, res, next) => {
+  if (!req.session.user) return res.redirect('/login');
+  next();
+};
 
+function decodeJwt(token) {
+  const payload = token.split('.')[1];
+  const padded = payload + '='.repeat((4 - payload.length % 4) % 4);
+  return JSON.parse(Buffer.from(padded, 'base64').toString());
+}
+
+// ─── Login ─────────────────────────────────────────────
+app.get('/login', (req, res) => {
+  const state = generators.state();
+  req.session.state = state;
+  const url = client.authorizationUrl({
+    scope: 'openid profile email',
+    state
+  });
+  res.redirect(url);
+});
+
+app.get('/callback', async (req, res) => {
+  try {
+    const params = client.callbackParams(req);
+    const tokenSet = await client.callback(
+      `http://localhost:${PORT}/callback`,
+      params,
+      { state: req.session.state }
+    );
+
+    const accessClaims = decodeJwt(tokenSet.access_token);
+    const idClaims = tokenSet.claims();
+
+    req.session.accessToken = tokenSet.access_token;
+    req.session.idToken = tokenSet.id_token;
+    req.session.refreshToken = tokenSet.refresh_token;
+    req.session.user = {
+      name: idClaims.name || idClaims.preferred_username,
+      email: idClaims.email,
+      preferred_username: idClaims.preferred_username,
+      sid: idClaims.sid,
+      roles: (accessClaims.realm_access && accessClaims.realm_access.roles) || []
+    };
+
+    res.redirect('/');
+  } catch (e) {
+    console.error('Callback error:', e.message);
+    res.status(500).send(`<pre>Authentication error:\n${e.message}</pre>`);
+  }
+});
+
+app.get('/logout', (req, res) => {
+  const idToken = req.session.idToken;
+  req.session.destroy(() => {
+    if (idToken) {
+      const logoutUrl = `${issuerUrl}/protocol/openid-connect/logout` +
+        `?id_token_hint=${idToken}` +
+        `&post_logout_redirect_uri=http://localhost:${PORT}`;
+      return res.redirect(logoutUrl);
+    }
+    res.redirect('/');
+  });
+});
+
+// ─── Home ──────────────────────────────────────────────
 app.get('/', auth, (req, res) => {
   const u = req.session.user;
   res.send(`
     <html><head><title>${NOMBRE}</title></head>
-    <body style="font-family:Arial;margin:0;background:#f0f4f8">
+    <body style="font-family:Arial,sans-serif;margin:0;background:#f0f4f8">
       <div style="background:${COLOR};color:white;padding:20px 30px">
-        <h2>🏢 ${NOMBRE}</h2>
+        <h2 style="margin:0">🏢 ${NOMBRE}</h2>
+        <span style="font-size:13px;opacity:.9">Single Sign-On demo · MFA enforced at login</span>
       </div>
-      <div style="padding:30px;max-width:650px">
-        <div style="background:white;padding:25px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1)">
-          <h3>👋 Bienvenido, ${u.name}</h3>
+      <div style="padding:30px;max-width:750px">
+
+        <div style="background:white;padding:25px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1);margin-bottom:20px">
+          <h3 style="margin-top:0">👋 Bienvenido, ${u.name}</h3>
           <table style="width:100%;border-collapse:collapse">
-            <tr><td style="padding:6px 0;color:#666">Email</td><td>${u.email}</td></tr>
-            <tr><td style="padding:6px 0;color:#666">Roles</td><td><code>${u.roles.join(', ')}</code></td></tr>
+            <tr><td style="padding:6px 0;color:#666;width:130px">Email</td><td>${u.email}</td></tr>
+            <tr><td style="padding:6px 0;color:#666">Roles</td><td><code>${u.roles.join(', ') || '(none)'}</code></td></tr>
             <tr><td style="padding:6px 0;color:#666">Session ID</td><td><code style="font-size:11px">${u.sid}</code></td></tr>
           </table>
-          <hr style="margin:20px 0">
-          <p>🧪 <strong>Prueba el SSO:</strong></p>
-          <p>→ <a href="http://localhost:3002" target="_blank">Abrir App Finanzas (3002)</a> 
-             — <em>no te pedirá login</em></p>
-          <hr style="margin:20px 0">
-          <a href="/logout" style="color:#c62828;text-decoration:none">🚪 Logout global</a>
         </div>
-        <details style="margin-top:20px">
-          <summary style="cursor:pointer;color:#666">Ver claims completos del access_token</summary>
-          <pre style="background:#f5f5f5;padding:15px;border-radius:4px;font-size:11px;overflow:auto">${JSON.stringify(u.claims, null, 2)}</pre>
+
+        <div style="background:white;padding:25px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1);margin-bottom:20px">
+          <h3 style="margin-top:0">🧪 Prueba el SSO</h3>
+          <p>→ <a href="http://localhost:3001" target="_blank">Abrir App Portal (3001)</a>
+             — <em>no te pedirá login, el SSO te reconoce automáticamente</em></p>
+          <p>→ <a href="http://localhost:3003" target="_blank">Abrir Admin Panel (3003)</a>
+             — <em>solo si tienes rol admin</em></p>
+          <p>→ <a href="http://localhost:3004" target="_blank">Abrir Self-Service Portal (3004)</a>
+             — <em>gestión de tus métodos 2FA</em></p>
+        </div>
+
+        <div style="margin-top:20px">
+          <a href="/logout" style="color:#c62828;text-decoration:none">🚪 Logout global (SLO)</a>
+        </div>
+
+        <details style="margin-top:20px;background:white;padding:15px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.1)">
+          <summary style="cursor:pointer;font-weight:bold;color:#555">📦 Ver claims del access_token</summary>
+          <pre style="margin-top:10px;font-size:11px;overflow:auto;background:#f5f5f5;padding:10px;border-radius:4px">${JSON.stringify(decodeJwt(req.session.accessToken), null, 2)}</pre>
         </details>
+
       </div>
     </body></html>
   `);
 });
 
-app.get('/login', (req, res) => {
-  const cv = generators.codeVerifier();
-  const state = generators.state();
-  const nonce = generators.nonce();
-  req.session.cv = cv; req.session.state = state; req.session.nonce = nonce;
-  res.redirect(client.authorizationUrl({
-    scope: 'openid email profile',
-    code_challenge: generators.codeChallenge(cv),
-    code_challenge_method: 'S256',
-    state, nonce
-  }));
+init().catch(e => {
+  console.error('Failed to init:', e.message);
+  process.exit(1);
 });
-
-app.get('/callback', async (req, res) => {
-  try {
-    const ts = await client.callback(`http://localhost:${PORT}/callback`,
-      client.callbackParams(req),
-      { code_verifier: req.session.cv, state: req.session.state, nonce: req.session.nonce });
-    const claims = ts.claims();
-    req.session.user = {
-      name: claims.name || claims.preferred_username,
-      email: claims.email,
-      roles: claims.realm_access?.roles || [],
-      sid: claims.sid,
-      claims
-    };
-    req.session.idToken = ts.id_token;
-    res.redirect('/');
-  } catch(e) { res.status(500).send(`Error: ${e.message}`); }
-});
-
-app.get('/logout', (req, res) => {
-  const idToken = req.session.idToken;
-  req.session.destroy();
-  res.redirect(client.endSessionUrl({
-    id_token_hint: idToken,
-    post_logout_redirect_uri: `http://localhost:${PORT}`
-  }));
-});
-
-init();
