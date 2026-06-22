@@ -2,7 +2,7 @@
 
 # Keycloak Enterprise IAM Lab
 
-**A production-grade Identity & Access Management laboratory built from scratch.**  
+**A production-grade Identity & Access Management laboratory built from scratch.**
 Keycloak 23 · OpenLDAP · OAuth2/OIDC · SAML 2.0 · SSO · MFA · WebAuthn · JWT · RS256
 
 [![Keycloak](https://img.shields.io/badge/Keycloak-23.0.6-4CAF50?style=flat-square&logo=keycloak&logoColor=white)](https://www.keycloak.org/)
@@ -12,7 +12,7 @@ Keycloak 23 · OpenLDAP · OAuth2/OIDC · SAML 2.0 · SSO · MFA · WebAuthn · 
 [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
-*Built as a hands-on training environment for enterprise IAM consulting projects.*  
+*Built as a hands-on training environment for enterprise IAM consulting projects.*
 *Every decision documented. Every problem solved and explained.*
 
 </div>
@@ -23,19 +23,39 @@ Keycloak 23 · OpenLDAP · OAuth2/OIDC · SAML 2.0 · SSO · MFA · WebAuthn · 
 
 This is not a "hello world" Keycloak tutorial.
 
-This lab simulates the IAM architecture of a real enterprise client — the kind you encounter in digital transformation projects at large consulting firms. The fictional company **AcmeCorp** needs to centralize identity for its employees, federate their existing Active Directory, protect modern web apps and APIs with SSO, enforce multi-factor authentication for privileged users, give every user self-service control over their credentials, and harden the configuration to meet ISO 27001 and ENS (Spain's National Security Framework) requirements.
+This lab simulates the IAM architecture of a real enterprise client — the kind you encounter in digital transformation projects at large consulting firms. The fictional company **AcmeCorp** needs to centralize identity for its employees, federate their existing Active Directory, protect modern web apps and APIs with SSO, enforce multi-factor authentication for every user, give each one self-service control over their credentials, and harden the configuration to meet ISO 27001 and ENS (Spain's National Security Framework) requirements.
 
-Everything here was built incrementally, hit real problems (macOS ARM compatibility, Keycloak 23 API changes, Docker networking edge cases), and those problems are documented with their solutions.
+Everything here was built incrementally, hit real problems (macOS ARM compatibility, Keycloak 23 API changes, Docker networking edge cases, authentication flow quirks), and those problems are documented with their solutions.
 
 **If you work in IAM, security consulting, or enterprise architecture, this lab covers what you actually need to know.**
 
 ---
 
-## Multi-Factor Authentication — Enterprise Grade
+## Multi-Factor Authentication — Universal Enforcement
 
-*Four methods. User chooses. Admin governs. Self-service enabled.*
+*Four methods. User chooses. Admin governs. Self-service enabled. Compliance-aligned.*
 
-This lab implements the full enterprise MFA pattern that real consulting projects deliver to clients, not the toy "let's enable TOTP" demo.
+This lab implements the full enterprise MFA pattern that real consulting projects deliver to clients — not the toy "let's enable TOTP for admins" demo. The authentication design follows the **ENS** and **ISO 27001** requirements that mandate strong authentication for **all users** with access to corporate resources, not just privileged ones.
+
+### Why universal MFA, not role-based
+
+A common first instinct is to apply MFA only to administrators. Any auditor under ENS or ISO 27001 will flag that configuration:
+
+```
+Authentication ≠ Authorization
+
+MFA proves WHO the user is — this must apply to everyone.
+RBAC decides WHAT they can do — that's where roles matter.
+
+An attacker who compromises a regular user's account has already
+established a foothold inside the corporate network. From there:
+  → lateral movement
+  → credential harvesting
+  → session token theft
+  → privilege escalation
+```
+
+The right control is universal MFA at authentication time, plus strict RBAC at authorization time.
 
 ### The four authentication methods
 
@@ -91,9 +111,9 @@ WebAuthn attack flow:
 
 This is why NIST SP 800-63B classifies WebAuthn as **AAL3** (highest assurance) and TOTP only as **AAL2**.
 
-### Conditional MFA by role
+### The authentication flow
 
-The pattern is conditional, not universal. The Authentication Flow `acmecorp-browser-mfa` enforces MFA automatically for users with the `admin` role and skips it for standard users:
+The custom Authentication Flow `acmecorp-browser-mfa` enforces password + second factor for every user, presenting a method selector at login:
 
 ```
 acmecorp-browser-mfa
@@ -101,15 +121,16 @@ acmecorp-browser-mfa
 ├── Identity Provider Redirector (ALTERNATIVE)
 └── Forms (ALTERNATIVE)
     ├── Username Password Form (REQUIRED)
-    └── 2FA Conditional (CONDITIONAL)
-        ├── Condition - User Role (REQUIRED) "admin"
-        └── 2FA Methods (REQUIRED)
-            ├── WebAuthn Authenticator (ALTERNATIVE)
-            ├── OTP Form (ALTERNATIVE)
-            └── Recovery Authentication Code (ALTERNATIVE)
+    └── Conditional OTP (CONDITIONAL)
+        ├── Condition - User Configured (REQUIRED)
+        ├── OTP Form (ALTERNATIVE)
+        ├── WebAuthn Authenticator (ALTERNATIVE)
+        └── Recovery Authentication Code (ALTERNATIVE)
 ```
 
-The combination `REQUIRED parent + ALTERNATIVE children` creates a method selector. At login, users see all the methods they have configured and choose which one to use.
+The `Condition - User Configured` step ensures the second factor is requested when the user has any 2FA method registered. New users are routed through a `CONFIGURE_TOTP` Required Action that forces 2FA setup on their first login, so the MFA universality is preserved across the user lifecycle.
+
+The combination `REQUIRED parent + ALTERNATIVE children` creates the method selector. At login, users see all the methods they have configured and choose which one to use.
 
 ---
 
@@ -246,10 +267,10 @@ We don't reimplement any of this. The portal provides the consolidated view; Key
 ║   Recovery Codes                Client Scopes                        ║
 ║   LDAP Federation                                                    ║
 ║   Identity Brokering            Token Engine                         ║
-║   Conditional MFA by role      ─────────────────                     ║
-║   Brute Force Protection       JWT / RS256                           ║
-║                                JWKS endpoint                         ║
-║                                Token TTL + Introspection             ║
+║   Universal MFA enforcement     ─────────────────                    ║
+║   Brute Force Protection        JWT / RS256                          ║
+║                                 JWKS endpoint                        ║
+║                                 Token TTL + Introspection            ║
 ║                                                                      ║
 ║   Backend: PostgreSQL 15                                             ║
 ╚══════════════════════════════════════════════════════════════════════╝
@@ -367,7 +388,6 @@ REFRESH TOKEN:   Application uses it to renew expired access tokens silently
   t=10s   User logs out → Keycloak session invalidated
   t=30s   Attacker uses stolen access_token
   t=30s   API validates JWT locally → still valid → ACCEPTED ⚠️
-  t=30s   Introspection check → active: false → REJECTED ✅
   t=300s  Token finally expires
 ```
 
@@ -383,13 +403,14 @@ Keycloak with PostgreSQL, complete realm configuration, 4 client types correctly
 ### Module 2 — LDAP / Active Directory Federation
 Keycloak federated with OpenLDAP simulating corporate AD, group mappers, attribute mappers (`departmentNumber`, `employeeNumber` → JWT claims), users organized in OUs by department.
 
-### Module 3 — MFA Authentication Flows (Conditional by Role)
-Custom Authentication Flow, TOTP policy, Conditional OTP by role (admins required, standard users not affected), `CONFIGURE_TOTP` required action for automatic onboarding.
+### Module 3 — MFA Authentication Flows
+Custom Authentication Flow with method selector pattern, TOTP policy (HmacSHA1, 6 digits, 30-second window), `CONFIGURE_TOTP` required action for automatic onboarding of new users, flow binding via Keycloak 23 contextual menu.
 
-### Module 4 — Enterprise MFA Complete
+### Module 4 — Enterprise MFA Complete (universal enforcement)
 - WebAuthn (passkeys, security keys, biometrics) — FIDO2 compliant
 - Recovery codes (preview feature enabled via flag)
 - Multi-method selector in login (user picks WebAuthn / TOTP / Recovery)
+- Universal MFA enforcement — every user authenticates with two factors
 - Custom admin panel (port 3003) — authenticated, role-based, centralized governance
 - Custom self-service portal (port 3004) — user manages own credentials
 - Native Account REST API integration with `kc_action` redirects
@@ -430,13 +451,15 @@ cd keycloak-iam-lab
 cp .env.example .env
 docker compose up -d
 
+# Wait ~60-90s for Keycloak to initialize and auto-import the realm
 curl -s http://localhost:8080/health/ready | python3 -m json.tool
 ```
 
-### Configure the lab
+The realm is **imported automatically** on first start from `realms/acmecorp-realm.json` (configured in `docker-compose.yml` via the `--import-realm` flag and a volume mount). No manual realm creation step is required.
+
+### Load LDAP and configure federation
 
 ```bash
-bash scripts/01_setup_realm.sh
 bash scripts/02_load_ldap.sh
 bash scripts/03_setup_ldap_federation.sh
 ```
@@ -444,12 +467,14 @@ bash scripts/03_setup_ldap_federation.sh
 ### Start the demo apps
 
 ```bash
-for app in portal finance admin-panel self-service; do
+# Install dependencies
+for app in app1 app2 admin-panel self-service; do
   (cd apps/$app && npm install)
 done
 
-(cd apps/portal && node server.js &)
-(cd apps/finance && node server.js &)
+# Start them in the background
+(cd apps/app1 && node server.js &)
+(cd apps/app2 && node server.js &)
 (cd apps/admin-panel && node server.js &)
 (cd apps/self-service && node server.js &)
 ```
@@ -460,24 +485,42 @@ done
 |---------|-----|-----|
 | **Keycloak Admin Console** | http://localhost:8080/admin | admin / Admin1234! |
 | **Account Console (native)** | http://localhost:8080/realms/acmecorp/account | any user |
-| **Portal App (SSO demo)** | http://localhost:3001 | jdoe / Test1234! |
-| **Finance App (SSO demo)** | http://localhost:3002 | SSO — no login needed |
+| **Portal App (SSO demo)** | http://localhost:3001 | any test user |
+| **Finance App (SSO demo)** | http://localhost:3002 | SSO — no login needed after first |
 | **Admin Panel** | http://localhost:3003 | admin role required |
 | **Self-Service Portal** | http://localhost:3004 | any authenticated user |
 | **phpLDAPadmin** | http://localhost:8090 | cn=admin,dc=acmecorp,dc=local |
 | **MailHog** | http://localhost:8025 | — |
 
+### First login — MFA setup walkthrough
+
+The realm ships with no 2FA configured for any user. On first login each user will be prompted to set up TOTP via the `CONFIGURE_TOTP` required action. After that, they can add WebAuthn or Recovery Codes from the self-service portal.
+
+```
+1. Open http://localhost:3001 → log in as jdoe / Test1234!
+2. Keycloak prompts you to configure TOTP (QR code)
+   → scan with Google Authenticator / FreeOTP / Authy / Microsoft Authenticator
+3. Enter the 6-digit code
+4. You're logged in
+5. Go to http://localhost:3004 to add a passkey (Touch ID, security key)
+   or generate Recovery Codes
+```
+
 ---
 
 ## Test Users
 
-| Username | Password | Roles | 2FA Configured |
-|----------|----------|-------|---------------|
-| `jdoe` | Test1234! | user, it-admin | none yet |
-| `msmith` | Test1234! | user, finance-viewer | none yet |
-| `itadmin` | Admin1234! | admin | TOTP + WebAuthn + Recovery |
-| `ldap.jdoe` | Test1234! | via LDAP groups | none |
-| `ldap.msmith` | Test1234! | via LDAP groups | none |
+The lab ships with five test users. None of them has any 2FA pre-configured — the lab is shipped clean so anyone who clones it walks through the configuration as part of the learning experience.
+
+| Username | Password | Roles | Federation |
+|----------|----------|-------|------------|
+| `itadmin` | Admin1234! | admin | local |
+| `jdoe` | Test1234! | user, it-admin | local |
+| `msmith` | Test1234! | user, finance-viewer | local |
+| `ldap.jdoe` | Test1234! | via LDAP groups | OpenLDAP |
+| `ldap.msmith` | Test1234! | via LDAP groups | OpenLDAP |
+
+All users will be prompted to configure TOTP on their first login via the `CONFIGURE_TOTP` required action.
 
 ---
 
@@ -490,16 +533,18 @@ keycloak-iam-lab/
 ├── README.md
 ├── LICENSE
 │
+├── realms/
+│   └── acmecorp-realm.json         # Realm imported automatically on first start
+│
 ├── apps/
-│   ├── portal/                     # SSO demo (port 3001)
-│   ├── finance/                    # SSO demo (port 3002)
+│   ├── app1/                       # SSO demo (port 3001)
+│   ├── app2/                       # SSO demo (port 3002)
 │   ├── admin-panel/                # Custom credential management (3003)
 │   └── self-service/               # Custom user portal (3004)
 │
 ├── ldap/bootstrap/                 # LDIF files for OpenLDAP
 │
 ├── scripts/
-│   ├── 01_setup_realm.sh
 │   ├── 02_load_ldap.sh
 │   ├── 03_setup_ldap_federation.sh
 │   ├── decode_token.py
@@ -529,17 +574,25 @@ HS256 uses a symmetric key — any service that verifies tokens can also forge t
 
 WebAuthn is phishing-resistant by design through origin binding. NIST SP 800-63B classifies it as AAL3, the highest assurance level. TOTP is AAL2 — vulnerable to real-time proxy MITM attacks.
 
+**Why universal MFA instead of role-based MFA?**
+
+ENS and ISO 27001 explicitly require strong authentication for all users with access to corporate resources. Applying MFA only to administrators leaves regular accounts as low-effort entry points for lateral movement, credential theft, and session hijacking. The right model is: every user authenticates with two factors, while RBAC and ABAC handle what they can do after that.
+
 **Why a custom admin panel if Keycloak has one?**
 
 The native Keycloak admin console is comprehensive but generic. A custom panel can focus the workflow on what security operations actually do daily, can match the corporate brand, and demonstrates the actual development skill needed to integrate Keycloak into a custom IAM stack.
 
 **Why a self-service portal if Keycloak has the Account Console?**
 
-The portal demonstrates how to embed credential management into a corporate application rather than redirecting users to the Keycloak Account Console. This is the pattern real consulting projects implement.
+The portal demonstrates how to embed credential management into a corporate application rather than redirecting users to the Keycloak Account Console. This is the pattern real consulting projects implement — corporate-branded UX with native Keycloak ceremonies behind the scenes via `kc_action`.
 
 **Why two OAuth2 flows in the admin panel?**
 
 Authorization Code Flow authenticates the human admin (accountability, role-based access). Client Credentials Flow authenticates the panel itself for API calls (separates user identity from service permissions). This is the standard pattern in any enterprise admin console.
+
+**Why ship the realm as a JSON export?**
+
+It guarantees a reproducible starting point. Anyone cloning the repo gets an identical Keycloak configuration on first boot: same clients, same roles, same flows, same LDAP federation settings. Manual setup scripts are error-prone and version-sensitive; a JSON export is deterministic.
 
 ---
 
@@ -548,13 +601,14 @@ Authorization Code Flow authenticates the human admin (accountability, role-base
 | Control | Standard | Implementation |
 |---------|----------|---------------|
 | Access Control | ISO 27001 A.9.4 | Password policy, brute force, session limits |
-| Multi-factor Authentication | ISO 27001 A.9.4.2 | TOTP, WebAuthn, Recovery Codes |
-| Strong Authentication | NIST SP 800-63B AAL3 | WebAuthn for privileged users |
+| Multi-factor Authentication | ISO 27001 A.9.4.2 | TOTP, WebAuthn, Recovery Codes — universal |
+| Strong Authentication | NIST SP 800-63B AAL3 | WebAuthn available to all users |
 | Session Management | ISO 27001 A.9.4.2 | Idle timeout, max lifespan |
 | Audit Logging | ISO 27001 A.12.4 | Event logging, SIEM-ready format |
 | Secure Transmission | ISO 27001 A.13.2 | TLS enforcement via `sslRequired` |
-| Authentication Strength | ENS mp.access.3 | MFA for privileged users |
+| Authentication Strength | ENS mp.access.3 | Universal MFA for all users |
 | Attempt Limiting | ENS mp.access.5 | Brute force protection |
+| Credential Management | ENS mp.access.1 | Centralized via Keycloak + self-service |
 | HTTP Security | OWASP ASVS 2.1 | CSP, HSTS, X-Frame-Options headers |
 
 ---
@@ -570,6 +624,19 @@ See [docs/troubleshooting.md](docs/troubleshooting.md) for detailed solutions to
 - Recovery Codes not visible until preview feature enabled
 - Email OTP not available natively (requires SPI extension)
 - Container name conflicts when restarting the stack
+- ACR-LoA mapping limitations in Keycloak 23 (step-up authentication)
+
+---
+
+## Future Work
+
+The lab is structured for incremental growth. Open items that would extend it:
+
+- **Step-up authentication with `acr_values`** — the patterns are documented in `docs/troubleshooting.md`, but full implementation in Keycloak 23 hits a known limitation with LoA mapping. Reliable implementation requires Keycloak 24+ or a custom Java SPI.
+- **Identity Brokering** — Google, Microsoft (Azure AD), GitHub as external IdPs.
+- **SAML 2.0 integration** — adding a legacy SAML app and demonstrating dual-protocol federation.
+- **Email OTP** — implementing it as a custom authenticator SPI (Java).
+- **Audit log export** — SIEM-ready JSON pipeline via the events listener API.
 
 ---
 
@@ -597,7 +664,7 @@ MIT — use it, modify it, share it.
 
 <div align="center">
 
-Built as part of a hands-on IAM training program for enterprise security consulting.  
+Built as part of a hands-on IAM training program for enterprise security consulting.
 *Every problem in the troubleshooting guide happened in real life.*
 
 </div>
