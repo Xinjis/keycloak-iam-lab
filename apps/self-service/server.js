@@ -42,7 +42,37 @@ function requireAuth(req, res, next) {
   next();
 }
 
-// ─── Auth ─────────────────────────────────────────────
+async function userApi(req, method, endpoint) {
+  const config = {
+    method: method,
+    url: KC_URL + '/realms/' + REALM + '/account' + endpoint,
+    headers: {
+      Authorization: 'Bearer ' + req.session.tokenSet.access_token,
+      'Content-Type': 'application/json'
+    }
+  };
+  const res = await axios(config);
+  return res.data;
+}
+
+async function userHasMfa(req) {
+  try {
+    const creds = await userApi(req, 'GET', '/credentials');
+    const mfaTypes = ['otp', 'webauthn', 'webauthn-passwordless', 'recovery-authn-codes'];
+    for (const c of creds) {
+      const type = c.type || '';
+      if (mfaTypes.includes(type)) {
+        if (c.userCredentialMetadatas && c.userCredentialMetadatas.length > 0) {
+          return true;
+        }
+      }
+    }
+    return false;
+  } catch (e) {
+    console.error('userHasMfa error:', e.message);
+    return false;
+  }
+}
 
 app.get('/login', (req, res) => {
   const state = generators.state();
@@ -71,7 +101,17 @@ app.get('/callback', async (req, res) => {
       refresh_token: tokenSet.refresh_token
     };
     req.session.user = tokenSet.claims();
-    res.redirect('/');
+
+    const returnTo = req.session.returnTo;
+    req.session.returnTo = null;
+
+    const hasMfa = await userHasMfa(req);
+    if (!hasMfa) {
+      req.session.postSetupRedirect = returnTo || '/';
+      return res.redirect('/welcome');
+    }
+
+    res.redirect(returnTo || '/');
   } catch (e) {
     console.error('Callback error:', e.message);
     res.status(500).send('Authentication failed: ' + e.message);
@@ -91,21 +131,31 @@ app.get('/logout', (req, res) => {
   });
 });
 
-// ─── API: scope = el propio usuario ───────────────────
+// ─── Welcome page (first-login MFA method selector) ───
 
-async function userApi(req, method, endpoint) {
-  // Llamamos al Account REST API de Keycloak con el access_token del usuario
-  const config = {
-    method: method,
-    url: KC_URL + '/realms/' + REALM + '/account' + endpoint,
-    headers: {
-      Authorization: 'Bearer ' + req.session.tokenSet.access_token,
-      'Content-Type': 'application/json'
-    }
-  };
-  const res = await axios(config);
-  return res.data;
-}
+app.get('/welcome', requireAuth, async (req, res) => {
+  const hasMfa = await userHasMfa(req);
+  if (hasMfa) {
+    const redirect = req.session.postSetupRedirect || '/';
+    req.session.postSetupRedirect = null;
+    return res.redirect(redirect);
+  }
+  res.sendFile(path.join(__dirname, 'public/welcome.html'));
+});
+
+// Endpoint that apps redirect to when they detect a user without MFA
+// GET /gatekeeper?returnTo=http://localhost:3001
+app.get('/gatekeeper', requireAuth, async (req, res) => {
+  const returnTo = req.query.returnTo || '/';
+  req.session.postSetupRedirect = returnTo;
+  const hasMfa = await userHasMfa(req);
+  if (hasMfa) {
+    return res.redirect(returnTo);
+  }
+  res.redirect('/welcome');
+});
+
+// ─── API ──────────────────────────────────────────────
 
 app.use('/api', requireAuth);
 
@@ -128,12 +178,16 @@ app.get('/api/me', async (req, res) => {
 app.get('/api/credentials', async (req, res) => {
   try {
     const data = await userApi(req, 'GET', '/credentials');
-    // Account REST API devuelve un array con info de cada tipo de credential
     res.json(data);
   } catch (e) {
     console.error('GET /credentials error:', e.message);
     res.status(500).json({ error: e.message });
   }
+});
+
+app.get('/api/has-mfa', async (req, res) => {
+  const has = await userHasMfa(req);
+  res.json({ hasMfa: has });
 });
 
 app.delete('/api/credentials/:id', async (req, res) => {
@@ -145,9 +199,6 @@ app.delete('/api/credentials/:id', async (req, res) => {
   }
 });
 
-// Genera URL para que el usuario configure un nuevo método
-// Esto redirige al Account Console nativo de Keycloak donde la ceremonia
-// (TOTP QR, WebAuthn registration, recovery codes) ya está implementada
 app.get('/api/setup-url/:type', (req, res) => {
   const type = req.params.type;
   const actionMap = {
@@ -159,20 +210,23 @@ app.get('/api/setup-url/:type', (req, res) => {
   const action = actionMap[type];
   if (!action) return res.status(400).json({ error: 'unknown type' });
 
-  // URL que dispara la kc_action en Keycloak
+  const backTo = req.query.from === 'welcome'
+    ? 'http://localhost:' + PORT + '/welcome'
+    : 'http://localhost:' + PORT + '/';
+
   const url = KC_URL + '/realms/' + REALM + '/protocol/openid-connect/auth' +
     '?client_id=' + CLIENT_ID +
-    '&redirect_uri=' + encodeURIComponent('http://localhost:' + PORT + '/') +
+    '&redirect_uri=' + encodeURIComponent(backTo) +
     '&response_type=code' +
     '&scope=openid' +
     '&kc_action=' + action;
   res.json({ url: url });
 });
 
-// ─── Frontend protegido ───────────────────────────────
+// ─── Frontend ─────────────────────────────────────────
 
 app.use((req, res, next) => {
-  if (req.path === '/login' || req.path === '/callback' || req.path === '/logout') return next();
+  if (req.path === '/login' || req.path === '/callback' || req.path === '/logout' || req.path === '/welcome' || req.path === '/gatekeeper') return next();
   requireAuth(req, res, next);
 });
 
@@ -181,7 +235,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 initOidc().then(() => {
   app.listen(PORT, () => {
     console.log('AcmeCorp Self-Service Portal running on http://localhost:' + PORT);
-    console.log('Open in browser to manage your own credentials');
+    console.log('MFA selector available at /welcome for first-time users');
   });
 }).catch(e => {
   console.error('Failed to init OIDC:', e.message);

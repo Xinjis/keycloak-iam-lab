@@ -1,11 +1,15 @@
 const express = require('express');
 const session = require('express-session');
+const axios = require('axios');
 const { Issuer, generators } = require('openid-client');
-const app = express();
 
+const app = express();
 const PORT = 3002;
 const NOMBRE = "App Finanzas";
 const COLOR = "#2E7D32";
+const KC_URL = 'http://localhost:8080';
+const REALM = 'acmecorp';
+const SELF_SERVICE_URL = 'http://localhost:3004';
 
 app.use(session({ secret: 'secret-app2', resave: false, saveUninitialized: false }));
 
@@ -13,8 +17,8 @@ let client;
 let issuerUrl;
 
 async function init() {
-  const issuer = await Issuer.discover('http://localhost:8080/realms/acmecorp');
-  issuerUrl = 'http://localhost:8080/realms/acmecorp';
+  const issuer = await Issuer.discover(KC_URL + '/realms/' + REALM);
+  issuerUrl = KC_URL + '/realms/' + REALM;
   client = new issuer.Client({
     client_id: 'acmecorp-portal',
     client_secret: 'portal-secret-local',
@@ -25,10 +29,29 @@ async function init() {
   app.listen(PORT, () => console.log(`${NOMBRE} → http://localhost:${PORT}`));
 }
 
-const auth = (req, res, next) => {
-  if (!req.session.user) return res.redirect('/login');
-  next();
-};
+// ─── Helpers ──────────────────────────────────────────
+
+async function userHasMfa(accessToken) {
+  try {
+    const res = await axios.get(
+      KC_URL + '/realms/' + REALM + '/account/credentials',
+      { headers: { Authorization: 'Bearer ' + accessToken } }
+    );
+    const mfaTypes = ['otp', 'webauthn', 'webauthn-passwordless', 'recovery-authn-codes'];
+    for (const c of res.data) {
+      const type = c.type || '';
+      if (mfaTypes.includes(type)) {
+        if (c.userCredentialMetadatas && c.userCredentialMetadatas.length > 0) {
+          return true;
+        }
+      }
+    }
+    return false;
+  } catch (e) {
+    console.error('userHasMfa error:', e.message);
+    return true;
+  }
+}
 
 function decodeJwt(token) {
   const payload = token.split('.')[1];
@@ -36,7 +59,27 @@ function decodeJwt(token) {
   return JSON.parse(Buffer.from(padded, 'base64').toString());
 }
 
-// ─── Login ─────────────────────────────────────────────
+// ─── Middleware ───────────────────────────────────────
+
+const auth = (req, res, next) => {
+  if (!req.session.user) return res.redirect('/login');
+  next();
+};
+
+const mfaGate = async (req, res, next) => {
+  if (!req.session.user || !req.session.accessToken) return next();
+  if (req.session.mfaChecked) return next();
+  const hasMfa = await userHasMfa(req.session.accessToken);
+  req.session.mfaChecked = true;
+  if (!hasMfa) {
+    const returnTo = `http://localhost:${PORT}`;
+    return res.redirect(`${SELF_SERVICE_URL}/gatekeeper?returnTo=${encodeURIComponent(returnTo)}`);
+  }
+  next();
+};
+
+// ─── Routes ───────────────────────────────────────────
+
 app.get('/login', (req, res) => {
   const state = generators.state();
   req.session.state = state;
@@ -62,6 +105,7 @@ app.get('/callback', async (req, res) => {
     req.session.accessToken = tokenSet.access_token;
     req.session.idToken = tokenSet.id_token;
     req.session.refreshToken = tokenSet.refresh_token;
+    req.session.mfaChecked = false;
     req.session.user = {
       name: idClaims.name || idClaims.preferred_username,
       email: idClaims.email,
@@ -90,8 +134,7 @@ app.get('/logout', (req, res) => {
   });
 });
 
-// ─── Home ──────────────────────────────────────────────
-app.get('/', auth, (req, res) => {
+app.get('/', auth, mfaGate, (req, res) => {
   const u = req.session.user;
   res.send(`
     <html><head><title>${NOMBRE}</title></head>
@@ -113,12 +156,9 @@ app.get('/', auth, (req, res) => {
 
         <div style="background:white;padding:25px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1);margin-bottom:20px">
           <h3 style="margin-top:0">🧪 Prueba el SSO</h3>
-          <p>→ <a href="http://localhost:3001" target="_blank">Abrir App Portal (3001)</a>
-             — <em>no te pedirá login, el SSO te reconoce automáticamente</em></p>
-          <p>→ <a href="http://localhost:3003" target="_blank">Abrir Admin Panel (3003)</a>
-             — <em>solo si tienes rol admin</em></p>
-          <p>→ <a href="http://localhost:3004" target="_blank">Abrir Self-Service Portal (3004)</a>
-             — <em>gestión de tus métodos 2FA</em></p>
+          <p>→ <a href="http://localhost:3001" target="_blank">Abrir Portal Empleados (3001)</a></p>
+          <p>→ <a href="http://localhost:3003" target="_blank">Abrir Admin Panel (3003)</a> — <em>solo si tienes rol admin</em></p>
+          <p>→ <a href="http://localhost:3004" target="_blank">Abrir Self-Service Portal (3004)</a></p>
         </div>
 
         <div style="margin-top:20px">
