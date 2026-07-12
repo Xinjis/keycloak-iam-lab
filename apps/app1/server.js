@@ -1,17 +1,22 @@
 const express = require('express');
 const session = require('express-session');
+const axios = require('axios');
 const { Issuer, generators } = require('openid-client');
 
 const app = express();
 const PORT = 3001;
 const NOMBRE = "Portal Empleados";
 const COLOR = "#1565C0";
+const KC_URL = 'http://localhost:8080';
+const REALM = 'acmecorp';
+const SELF_SERVICE_URL = 'http://localhost:3004';
 
 app.use(session({ secret: 'secret-app1', resave: false, saveUninitialized: false }));
 
 let client;
+
 async function init() {
-  const issuer = await Issuer.discover('http://localhost:8080/realms/acmecorp');
+  const issuer = await Issuer.discover(KC_URL + '/realms/' + REALM);
   client = new issuer.Client({
     client_id: 'acmecorp-portal',
     client_secret: 'portal-secret-local',
@@ -22,9 +27,54 @@ async function init() {
   app.listen(PORT, () => console.log(`${NOMBRE} → http://localhost:${PORT}`));
 }
 
-const auth = (req, res, next) => { if (!req.session.user) return res.redirect('/login'); next(); };
+// ─── Helpers ──────────────────────────────────────────
 
-app.get('/', auth, (req, res) => {
+async function userHasMfa(accessToken) {
+  try {
+    const res = await axios.get(
+      KC_URL + '/realms/' + REALM + '/account/credentials',
+      { headers: { Authorization: 'Bearer ' + accessToken } }
+    );
+    const mfaTypes = ['otp', 'webauthn', 'webauthn-passwordless', 'recovery-authn-codes'];
+    for (const c of res.data) {
+      const type = c.type || '';
+      if (mfaTypes.includes(type)) {
+        if (c.userCredentialMetadatas && c.userCredentialMetadatas.length > 0) {
+          return true;
+        }
+      }
+    }
+    return false;
+  } catch (e) {
+    console.error('userHasMfa error:', e.message);
+    return true; // fail-open en errores para no bloquear al usuario
+  }
+}
+
+// ─── Middleware ───────────────────────────────────────
+
+const auth = (req, res, next) => {
+  if (!req.session.user) return res.redirect('/login');
+  next();
+};
+
+// Gatekeeper: si el usuario está autenticado pero no tiene MFA → redirigir al selector
+const mfaGate = async (req, res, next) => {
+  if (!req.session.user || !req.session.accessToken) return next();
+  // Solo comprobar una vez por sesión para no penalizar rendimiento
+  if (req.session.mfaChecked) return next();
+  const hasMfa = await userHasMfa(req.session.accessToken);
+  req.session.mfaChecked = true;
+  if (!hasMfa) {
+    const returnTo = `http://localhost:${PORT}`;
+    return res.redirect(`${SELF_SERVICE_URL}/gatekeeper?returnTo=${encodeURIComponent(returnTo)}`);
+  }
+  next();
+};
+
+// ─── Routes ───────────────────────────────────────────
+
+app.get('/', auth, mfaGate, (req, res) => {
   const u = req.session.user;
   res.send(`
     <html><head><title>${NOMBRE}</title></head>
@@ -42,8 +92,9 @@ app.get('/', auth, (req, res) => {
           </table>
           <hr style="margin:20px 0">
           <p>🧪 <strong>Prueba el SSO:</strong></p>
-          <p>→ <a href="http://localhost:3002" target="_blank">Abrir App Finanzas (3002)</a> 
+          <p>→ <a href="http://localhost:3002" target="_blank">Abrir App Finanzas (3002)</a>
              — <em>no te pedirá login</em></p>
+          <p>→ <a href="http://localhost:3004" target="_blank">Gestionar métodos 2FA</a></p>
           <hr style="margin:20px 0">
           <a href="/logout" style="color:#c62828;text-decoration:none">🚪 Logout global</a>
         </div>
@@ -60,7 +111,9 @@ app.get('/login', (req, res) => {
   const cv = generators.codeVerifier();
   const state = generators.state();
   const nonce = generators.nonce();
-  req.session.cv = cv; req.session.state = state; req.session.nonce = nonce;
+  req.session.cv = cv;
+  req.session.state = state;
+  req.session.nonce = nonce;
   res.redirect(client.authorizationUrl({
     scope: 'openid email profile',
     code_challenge: generators.codeChallenge(cv),
@@ -83,8 +136,12 @@ app.get('/callback', async (req, res) => {
       claims
     };
     req.session.idToken = ts.id_token;
+    req.session.accessToken = ts.access_token;
+    req.session.mfaChecked = false; // recheck en el próximo request
     res.redirect('/');
-  } catch(e) { res.status(500).send(`Error: ${e.message}`); }
+  } catch(e) {
+    res.status(500).send(`Error: ${e.message}`);
+  }
 });
 
 app.get('/logout', (req, res) => {

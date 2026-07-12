@@ -11,6 +11,7 @@ const REALM = 'acmecorp';
 const CLIENT_ID = 'acmecorp-admin-panel';
 const CLIENT_SECRET = 'panel-secret-local';
 const REQUIRED_ROLE = 'admin';
+const SELF_SERVICE_URL = 'http://localhost:3004';
 
 app.use(express.json());
 app.use(session({
@@ -61,6 +62,40 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+async function userHasMfa(accessToken) {
+  try {
+    const res = await axios.get(
+      KC_URL + '/realms/' + REALM + '/account/credentials',
+      { headers: { Authorization: 'Bearer ' + accessToken } }
+    );
+    const mfaTypes = ['otp', 'webauthn', 'webauthn-passwordless', 'recovery-authn-codes'];
+    for (const c of res.data) {
+      const type = c.type || '';
+      if (mfaTypes.includes(type)) {
+        if (c.userCredentialMetadatas && c.userCredentialMetadatas.length > 0) {
+          return true;
+        }
+      }
+    }
+    return false;
+  } catch (e) {
+    console.error('userHasMfa error:', e.message);
+    return true;
+  }
+}
+
+async function mfaGate(req, res, next) {
+  if (!req.session.user || !req.session.tokenSet) return next();
+  if (req.session.mfaChecked) return next();
+  const hasMfa = await userHasMfa(req.session.tokenSet.access_token);
+  req.session.mfaChecked = true;
+  if (!hasMfa) {
+    const returnTo = 'http://localhost:' + PORT;
+    return res.redirect(SELF_SERVICE_URL + '/gatekeeper?returnTo=' + encodeURIComponent(returnTo));
+  }
+  next();
+}
+
 // ─── Auth endpoints ──────────────────────────────────────
 
 app.get('/login', (req, res) => {
@@ -98,6 +133,7 @@ app.get('/callback', async (req, res) => {
       realm_access: accessPayload.realm_access || { roles: [] },
       resource_access: accessPayload.resource_access || {}
     });
+    req.session.mfaChecked = false;
     res.redirect('/');
   } catch (e) {
     console.error('Callback error:', e.message);
@@ -242,7 +278,7 @@ app.put('/api/users/:id/toggle', async (req, res) => {
 
 app.use((req, res, next) => {
   if (req.path === '/login' || req.path === '/callback' || req.path === '/logout') return next();
-  requireAuth(req, res, () => requireAdmin(req, res, next));
+  requireAuth(req, res, () => requireAdmin(req, res, () => mfaGate(req, res, next)));
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
